@@ -1,6 +1,13 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_sound/flutter_sound.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:logger/src/logger.dart' as logger;
+
+import 'audio_wave.dart';
 
 void main() {
   runApp(const MyApp());
@@ -24,91 +31,179 @@ class MyApp extends StatelessWidget {
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({Key? key, required this.title}) : super(key: key);
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
   final String title;
-
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  final AudioRecorderService _recorder = AudioRecorderService();
+  //final AudioPlayerService _player = AudioPlayerService();
 
-  void _incrementCounter() {
+  @override
+  void initState() {
+    super.initState();
+    _recorder.init();
+    //_player.init();
+  }
+
+  @override
+  void dispose() {
+    //_player.dispose();
+    _recorder.dispose();
+    super.dispose();
+  }
+
+  bool _isBusy = false;
+  void _toggleBusy({required bool value}) {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _isBusy = value;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-
     return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headline4,
-            ),
-          ],
+        child: !_isBusy ? const Text('!!busy...') : const AudioWave(),
+      ),
+      floatingActionButton: GestureDetector(
+        onLongPressStart: (details) async {
+          _toggleBusy(value: true);
+          await _recorder.record();
+        },
+        onLongPressEnd: (details) async {
+          await _recorder.stop();
+          _toggleBusy(value: true);
+
+          final _p = AudioPlayerService();
+          await _p.init();
+          await _p.play(whenDone: () => _toggleBusy(value: false));
+        },
+        child: Container(
+          width: 64.0,
+          padding: const EdgeInsets.all(8.0),
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.indigo,
+          ),
+          child: const Icon(
+            Icons.mic,
+            size: 42.0,
+            color: Colors.white,
+          ),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () async {
-          _incrementCounter();
-          print(await getTemporaryDirectory());
-          final status = await Permission.microphone.request();
-          print(status);
-        },
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
+  }
+}
+
+late final String pathToSavedAudio;
+
+class AudioRecorderService {
+  FlutterSoundRecorder? _myRecorder;
+
+  bool _isInitialised = false;
+  bool get isRecording => _myRecorder!.isRecording;
+  Future init() async {
+    Directory tempDir = await getTemporaryDirectory();
+    pathToSavedAudio = tempDir.path + '/audio_example.aac';
+    _myRecorder = FlutterSoundRecorder(logLevel: logger.Level.nothing);
+
+    final status = await Permission.microphone.request();
+    if (status != PermissionStatus.granted) {
+      throw RecordingPermissionException('Need the permission to record audio');
+    }
+    final storage = await Permission.storage.request();
+    if (storage != PermissionStatus.granted) {
+      throw RecordingPermissionException(
+          'Need the permission to  await Permission.photos.request();');
+    }
+    _myRecorder = await _myRecorder!.openAudioSession();
+
+    await _myRecorder!.setSubscriptionDuration(
+      const Duration(milliseconds: 10),
+    );
+    _isInitialised = true;
+  }
+
+  Future record() async {
+    if (_isInitialised) {
+      await _myRecorder!.startRecorder(
+        toFile: pathToSavedAudio,
+        codec: Codec.aacMP4,
+      );
+    }
+  }
+
+  Future stop() async {
+    if (_isInitialised) {
+      final audio = await _myRecorder!.stopRecorder();
+      print('audio: $audio');
+    }
+  }
+
+  void dispose() {
+    if (_isInitialised) {
+      _myRecorder!.closeAudioSession();
+      _myRecorder = null;
+      _isInitialised = false;
+    }
+  }
+}
+
+class AudioPlayerService {
+  late final FlutterSoundPlayer? _myPlayer;
+  bool _isInitialised = false;
+
+  bool get isPlaying => _myPlayer!.isPlaying;
+
+  Future init() async {
+    _myPlayer = FlutterSoundPlayer(logLevel: logger.Level.nothing);
+    await _myPlayer!.openAudioSession();
+    _isInitialised = true;
+  }
+
+  Future play({required Function whenDone}) async {
+    // final bytes = File(pathToSavedAudio).readAsBytesSync();
+    // final audioBaseString = base64Encode((bytes));
+    if (_isInitialised) {
+      await _myPlayer!.startPlayer(
+        fromURI: pathToSavedAudio,
+        //fromDataBuffer: base64.decode(audioBaseString),
+        whenFinished: () async {
+          // ignore: avoid_print
+          print('Playing Audio Finnish');
+          whenDone();
+        },
+      );
+    }
+  }
+
+  Future playBytes({required Function whenDone}) async {
+    final bytes = File(pathToSavedAudio).readAsBytesSync();
+    print('bytes: $bytes');
+    await _myPlayer!.startPlayer(
+      fromDataBuffer: bytes,
+      whenFinished: () async {
+        whenDone();
+        //File(pathToSavedAudio).deleteSync(recursive: true);
+        await stop();
+      },
+    );
+  }
+
+  Future stop() async {
+    if (_isInitialised) {
+      await _myPlayer!.stopPlayer();
+    }
+  }
+
+  void dispose() {
+    if (_isInitialised) {
+      _myPlayer!.closeAudioSession();
+      _myPlayer = null;
+      _isInitialised = false;
+    }
   }
 }
